@@ -1,4 +1,3 @@
-$ cat handler.js
 // A simple lambda function to revoke IAM roles of groups periodically
 // By @dvdtoth
 
