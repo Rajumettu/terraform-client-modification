@@ -1,77 +1,85 @@
-variable "iam_user_name" {
-  default     = "<>"
-}
-data "aws_iam_user" "existing_user" {
-  user_name = "var.iam_user_name"  
-}
-
-resource "aws_iam_policy" "api_key_rotation_policy" {
-  name        = "APIKeyRotationPolicy"
-  description = "Denies access if API keys are not rotated within 90 days"
-
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect   = "Deny",
-      Action   = [
-        "iam:UpdateAccessKey",
-        "iam:DeleteAccessKey",
-        "iam:CreateAccessKey"
-      ],
-      Resource = "*",
-      Condition = {
-        NumericGreaterThanEquals = {
-          "aws:CredentialPresentTime" : "90"
-        }
-      }
-    }]
-  })
+variable "groups" {
+  type        = string
+  default     = "Developers, Administrators"
+  description = "Comma separated list of IAM groups"
 }
 
-# AWS Lambda function to check for access key rotation
-resource "aws_lambda_function" "check_access_key_rotation" {
-  filename      = "check_access_key_rotation.zip" # Path to your lambda function code
-  function_name = "CheckAccessKeyRotation"
-  role          = aws_iam_role.lambda_execution_role.arn
-  handler       = "index.handler"
-  runtime       = "nodejs14.x"
+variable "schedule" {
+  type        = string
+  default     = "cron(0 0 ? 1 */3 *)"
 }
+resource "aws_iam_role" "revoke_keys_role" {
+  name = "RevokeKeysRole"
 
-# CloudWatch Events rule to trigger the Lambda function periodically
-resource "aws_cloudwatch_event_rule" "trigger_check_access_key_rotation" {
-  name                = "TriggerCheckAccessKeyRotation"
-  schedule_expression = "rate(1 day)"
-}
-
-resource "aws_cloudwatch_event_target" "invoke_check_access_key_rotation" {
-  rule = aws_cloudwatch_event_rule.trigger_check_access_key_rotation.name
-  arn  = aws_lambda_function.check_access_key_rotation.arn
-}
-
-# IAM role for Lambda execution
-resource "aws_iam_role" "lambda_execution_role" {
-  name = "LambdaExecutionRole"
-
-  assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
-    Statement = [{
-      Effect    = "Allow",
-      Principal = {
-        Service = "lambda.amazonaws.com"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
       },
-      Action    = "sts:AssumeRole"
-    }]
-  })
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
 
-  tags = {
-    Name = "LambdaExecutionRole"
+resource "aws_iam_role_policy" "revoke_keys_role_policy" {
+  name = "RevokeKeysRolePolicy"
+  role = "${aws_iam_role.revoke_keys_role.id}"
+
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "iam:GetGroup",
+        "iam:ListAccessKeys",
+        "iam:DeleteAccessKey"
+      ],
+      "Effect": "Allow",
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_lambda_function" "revoke_keys" {
+  filename         = "revoke_keys.zip"
+  function_name    = "RevokeKeys"
+  role             = "${aws_iam_role.revoke_keys_role.arn}"
+  handler          = "handler.revoke"
+  source_code_hash = "${base64sha256(filebase64sha256("revoke_keys.zip"))}"
+  runtime          = "nodejs16.x"
+
+  environment {
+    variables = {
+      GROUPS = "${var.groups}"
+    }
   }
 }
 
-# Attach the IAM policy to the appropriate IAM users or roles
-# Replace <your_user_or_role_here> with the appropriate user or role ARN
-resource "aws_iam_policy_attachment" "attach_policy_to_user" {
-  name       = "AttachPolicyToUser"
-  users      = data.aws_iam_user.user_name
-  policy_arn = aws_iam_policy.api_key_rotation_policy.arn
+resource "aws_cloudwatch_event_rule" "weekly" {
+  name                = "weekly"
+  schedule_expression = "${var.schedule}"
+  //is_enabled          = "true"
+}
+
+resource "aws_cloudwatch_event_target" "revoke_keys_weekly" {
+  rule      = "${aws_cloudwatch_event_rule.weekly.name}"
+  target_id = "revoke_keys"
+  arn       = "${aws_lambda_function.revoke_keys.arn}"
+}
+
+resource "aws_lambda_permission" "allow_cloudwatch_to_call_revoke_keys" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = "${aws_lambda_function.revoke_keys.function_name}"
+  principal     = "events.amazonaws.com"
+  source_arn    = "${aws_cloudwatch_event_rule.weekly.arn}"
 }
