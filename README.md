@@ -1,8 +1,7 @@
 # terraform-client-modification
 Task3-- API Keys Not Rotated Within 90 Days
 Prerequisite--- 
-1- write  a code to perform the checking access key rotation
-2- Must have the IAM user whose access key is to be checked
+1- Convert the handler.js into zip file
 Solution-- Put your lamda function code in zip file and provide the location specified in APIkey_rotation.tf. Now put your access key and secret key in provider.tf.
 commands to be run---- 1- terraform init
                        2- terraform plan
